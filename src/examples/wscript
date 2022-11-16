@@ -51,12 +51,12 @@ def build(bld):
 
         bld.program(
             features="cxx",
-            install_path="${PREFIX}/bin",
+            install_path=None,  # "${PREFIX}/bin",
             source=example,
             includes=["../external/include", ".."],
             uselib=bld.env["libs"],
             use=bld.env["libname"],
-            lib=['NatNetLibShared'],
+            lib=['NatNet'],
             libpath=['../src/external/lib/'],
             target=example[: len(example) - len(".cpp")],
         )

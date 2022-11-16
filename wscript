@@ -54,7 +54,7 @@ def options(opt):
     load(opt, compiler, required, optional)
 
     # Load examples options
-    opt.recurse("./src/exec")
+    opt.recurse("./src/examples")
 
 
 def configure(cfg):
@@ -62,7 +62,7 @@ def configure(cfg):
     load(cfg, compiler, required, optional)
 
     # Load examples configurations
-    cfg.recurse("./src/exec")
+    cfg.recurse("./src/examples")
 
 
 def build(bld):
@@ -108,8 +108,8 @@ def build(bld):
         uselib=bld.get_env()["libs"],
     )
 
-    # Build executables
-    bld.recurse("./src/exec")
+    # Build examples
+    bld.recurse("./src/examples")
 
     # Install headers
     [bld.install_files("${PREFIX}/include/" + os.path.dirname(f)[4:], f)
