@@ -1,7 +1,7 @@
 #include <iostream>
 #include <optitrack_lib/Optitrack.hpp>
 
-using namespace optitrack;
+using namespace optitrack_lib;
 
 int main(int argc, char const* argv[])
 {
@@ -9,9 +9,10 @@ int main(int argc, char const* argv[])
 
     bool status = opt.connect();
 
-    opt.request();
-
-    opt.run();
+    while (true) {
+        std::cout << "Receiving:" << std::endl;
+        std::cout << opt.rigidBodies() << std::endl;
+    }
 
     return 0;
 }

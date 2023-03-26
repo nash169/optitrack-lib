@@ -35,8 +35,8 @@ blddir = "build"
 libdir = "optitrack_lib"
 
 compiler = "cxx"
-required = ["zmq"]
-optional = None
+required = ["zmq", "eigen"]
+optional = ["zmqstream"]
 
 
 def options(opt):
