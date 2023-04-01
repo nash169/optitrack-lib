@@ -25,7 +25,7 @@
 
 import os
 
-required = {}
+required = {"send_zmq.cpp": ["ZMQSTREAM"], "receive_zmq.cpp": ["ZMQSTREAM"]}
 optional = {}
 
 

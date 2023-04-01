@@ -35,7 +35,7 @@ blddir = "build"
 libdir = "optitrack_lib"
 
 compiler = "cxx"
-required = ["zmq", "eigen"]
+required = ["eigen"]
 optional = ["zmqstream"]
 
 
