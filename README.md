@@ -1,2 +1,2 @@
-# optitrack-lib
-Repositories for streamig optitrack data.
+# Optitrack
+Simple wrapper around NatNet SDK for streaming optitrack data.

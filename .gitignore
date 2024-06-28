@@ -403,3 +403,4 @@ TSWLatexianTemp*
 
 waf_configure
 install
+.lock-waf_darwin_build

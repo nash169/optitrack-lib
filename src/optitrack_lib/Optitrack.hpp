@@ -1,9 +1,14 @@
 #ifndef OPTITRACKLIB_OPTITRACK_HPP
 #define OPTITRACKLIB_OPTITRACK_HPP
 
-#include <memory>
+#include <map>
 #include <string>
 #include <vector>
+#include <deque>
+#include <thread>
+#include <mutex>
+#include <memory>
+#include <chrono>
 
 #include <inttypes.h>
 #include <termios.h>
@@ -15,6 +20,8 @@
 
 #include <Eigen/Core>
 #include <unordered_map>
+
+using namespace std::chrono_literals;
 
 namespace optitrack_lib {
     std::vector<sNatNetDiscoveredServer> discoveredServers;
@@ -42,6 +49,13 @@ namespace optitrack_lib {
 
         discoveredServers.push_back(*pDiscoveredServer);
     }
+
+    struct MocapFrameWrapper
+    {
+        std::shared_ptr<sFrameOfMocapData> data;
+        double transitLatencyMillisec;
+        double clientLatencyMillisec;
+    };
 
     class Optitrack {
     public:
@@ -125,7 +139,7 @@ namespace optitrack_lib {
             }
 
             // Connect to Motive
-            int iResult = ConnectClient();
+            int iResult = connectClient();
             if (iResult != ErrorCode_OK) {
                 printf("Error initializing client. See log for details. Exiting.\n");
                 return false;
@@ -144,104 +158,78 @@ namespace optitrack_lib {
             return true;
         }
 
-        void request()
+        // const Eigen::MatrixXd& rigidBodies() { return _rigidBodies; }
+
+        Eigen::Matrix<double, 7, 1> rigidBody(const std::string& bodyName)
         {
-            // Retrieve Data Descriptions from Motive
-            printf("\n\n[SampleClient] Requesting Data Descriptions...\n");
-            sDataDescriptions* pDataDefs = NULL;
-            int iResult = _client->GetDataDescriptionList(&pDataDefs);
-            if (iResult != ErrorCode_OK || pDataDefs == NULL) {
-                printf("[SampleClient] Unable to retrieve Data Descriptions.\n");
+            return _rigidBodies[bodyName];
+        }
+
+        void updateData()
+        {
+            std::deque<MocapFrameWrapper> displayQueue;
+            if (_networkQueueMutex.try_lock_for(std::chrono::milliseconds(5)))
+            {
+                for (MocapFrameWrapper f : _networkQueue)
+                {
+                    displayQueue.push_back(f);
+                }
+
+                // Release all frames in network queue
+                _networkQueue.clear();
+                _networkQueueMutex.unlock();
             }
-            else {
-                printf("[SampleClient] Received %d Data Descriptions:\n", pDataDefs->nDataDescriptions);
-                for (int i = 0; i < pDataDefs->nDataDescriptions; i++) {
-                    printf("Data Description # %d (type=%d)\n", i, pDataDefs->arrDataDescriptions[i].type);
-                    if (pDataDefs->arrDataDescriptions[i].type == Descriptor_MarkerSet) {
-                        // MarkerSet
-                        sMarkerSetDescription* pMS = pDataDefs->arrDataDescriptions[i].Data.MarkerSetDescription;
-                        printf("MarkerSet Name : %s\n", pMS->szName);
-                        for (int i = 0; i < pMS->nMarkers; i++)
-                            printf("%s\n", pMS->szMarkerNames[i]);
-                    }
-                    else if (pDataDefs->arrDataDescriptions[i].type == Descriptor_RigidBody) {
-                        // RigidBody
-                        sRigidBodyDescription* pRB = pDataDefs->arrDataDescriptions[i].Data.RigidBodyDescription;
-                        printf("RigidBody Name : %s\n", pRB->szName);
-                        printf("RigidBody ID : %d\n", pRB->ID);
-                        printf("RigidBody Parent ID : %d\n", pRB->parentID);
-                        printf("Parent Offset : %3.2f,%3.2f,%3.2f\n", pRB->offsetx, pRB->offsety, pRB->offsetz);
+            
+            for (MocapFrameWrapper f : displayQueue)
+            {
+                sFrameOfMocapData* data = f.data.get();
+                _rigidBodies.clear();
 
-                        if (pRB->MarkerPositions != NULL && pRB->MarkerRequiredLabels != NULL) {
-                            for (int markerIdx = 0; markerIdx < pRB->nMarkers; ++markerIdx) {
-                                const MarkerData& markerPosition = pRB->MarkerPositions[markerIdx];
-                                const int markerRequiredLabel = pRB->MarkerRequiredLabels[markerIdx];
+                // printf("Rigid Bodies [Count=%d]\n", data->nRigidBodies);
+                for (int i = 0; i < data->nRigidBodies; i++)
+                {
+                    
 
-                                printf("\tMarker #%d:\n", markerIdx);
-                                printf("\t\tPosition: %.2f, %.2f, %.2f\n", markerPosition[0], markerPosition[1], markerPosition[2]);
+                    int streamingID = data->RigidBodies[i].ID;
+                    Eigen::Matrix<double, 7, 1> pose = (Eigen::Matrix<double, 7, 1>() << data->RigidBodies[i].x, data->RigidBodies[i].y, data->RigidBodies[i].z, data->RigidBodies[i].qx, data->RigidBodies[i].qy, data->RigidBodies[i].qz, data->RigidBodies[i].qw).finished();
 
-                                if (markerRequiredLabel != 0) {
-                                    printf("\t\tRequired active label: %d\n", markerRequiredLabel);
-                                }
-                            }
-                        }
-                    }
-                    else if (pDataDefs->arrDataDescriptions[i].type == Descriptor_Skeleton) {
-                        // Skeleton
-                        sSkeletonDescription* pSK = pDataDefs->arrDataDescriptions[i].Data.SkeletonDescription;
-                        printf("Skeleton Name : %s\n", pSK->szName);
-                        printf("Skeleton ID : %d\n", pSK->skeletonID);
-                        printf("RigidBody (Bone) Count : %d\n", pSK->nRigidBodies);
-                        for (int j = 0; j < pSK->nRigidBodies; j++) {
-                            sRigidBodyDescription* pRB = &pSK->RigidBodies[j];
-                            printf("  RigidBody Name : %s\n", pRB->szName);
-                            printf("  RigidBody ID : %d\n", pRB->ID);
-                            printf("  RigidBody Parent ID : %d\n", pRB->parentID);
-                            printf("  Parent Offset : %3.2f,%3.2f,%3.2f\n", pRB->offsetx, pRB->offsety, pRB->offsetz);
-                        }
-                    }
-                    else if (pDataDefs->arrDataDescriptions[i].type == Descriptor_ForcePlate) {
-                        // Force Plate
-                        sForcePlateDescription* pFP = pDataDefs->arrDataDescriptions[i].Data.ForcePlateDescription;
-                        printf("Force Plate ID : %d\n", pFP->ID);
-                        printf("Force Plate Serial : %s\n", pFP->strSerialNo);
-                        printf("Force Plate Width : %3.2f\n", pFP->fWidth);
-                        printf("Force Plate Length : %3.2f\n", pFP->fLength);
-                        printf("Force Plate Electrical Center Offset (%3.3f, %3.3f, %3.3f)\n", pFP->fOriginX, pFP->fOriginY, pFP->fOriginZ);
-                        for (int iCorner = 0; iCorner < 4; iCorner++)
-                            printf("Force Plate Corner %d : (%3.4f, %3.4f, %3.4f)\n", iCorner, pFP->fCorners[iCorner][0], pFP->fCorners[iCorner][1], pFP->fCorners[iCorner][2]);
-                        printf("Force Plate Type : %d\n", pFP->iPlateType);
-                        printf("Force Plate Data Type : %d\n", pFP->iChannelDataType);
-                        printf("Force Plate Channel Count : %d\n", pFP->nChannels);
-                        for (int iChannel = 0; iChannel < pFP->nChannels; iChannel++)
-                            printf("\tChannel %d : %s\n", iChannel, pFP->szChannelNames[iChannel]);
-                    }
-                    else if (pDataDefs->arrDataDescriptions[i].type == Descriptor_Device) {
-                        // Peripheral Device
-                        sDeviceDescription* pDevice = pDataDefs->arrDataDescriptions[i].Data.DeviceDescription;
-                        printf("Device Name : %s\n", pDevice->strName);
-                        printf("Device Serial : %s\n", pDevice->strSerialNo);
-                        printf("Device ID : %d\n", pDevice->ID);
-                        printf("Device Channel Count : %d\n", pDevice->nChannels);
-                        for (int iChannel = 0; iChannel < pDevice->nChannels; iChannel++)
-                            printf("\tChannel %d : %s\n", iChannel, pDevice->szChannelNames[iChannel]);
-                    }
-                    else if (pDataDefs->arrDataDescriptions[i].type == Descriptor_Camera) {
-                        // Camera
-                        sCameraDescription* pCamera = pDataDefs->arrDataDescriptions[i].Data.CameraDescription;
-                        printf("Camera Name : %s\n", pCamera->strName);
-                        printf("Camera Position (%3.2f, %3.2f, %3.2f)\n", pCamera->x, pCamera->y, pCamera->z);
-                        printf("Camera Orientation (%3.2f, %3.2f, %3.2f, %3.2f)\n", pCamera->qx, pCamera->qy, pCamera->qz, pCamera->qw);
-                    }
-                    else {
-                        printf("Unknown data type.\n");
-                        // Unknown
-                    }
+                    std::pair<std::map<std::string, Eigen::Matrix<double, 7, 1>>::iterator, bool> insertResult;
+                    insertResult = _rigidBodies.insert(std::pair<std::string, Eigen::Matrix<double, 7, 1>>(_assetIDtoAssetName[streamingID], pose));
+
+                    // // params
+                    // // 0x01 : bool, rigid body was successfully tracked in this frame
+                    // bool bTrackingValid = data->RigidBodies[i].params & 0x01;
+                    // // int streamingID = data->RigidBodies[i].ID;
+                    // printf("%s [ID=%d  Error(mm)=%.5f  Tracked=%d]\n", _assetIDtoAssetName[streamingID].c_str(), streamingID, data->RigidBodies[i].MeanError*1000.0f, bTrackingValid);
+                    // printf("\tx\ty\tz\tqx\tqy\tqz\tqw\n");
+                    // printf("\t%3.2f\t%3.2f\t%3.2f\t%3.2f\t%3.2f\t%3.2f\t%3.2f\n",
+                    //     data->RigidBodies[i].x,
+                    //     data->RigidBodies[i].y,
+                    //     data->RigidBodies[i].z,
+                    //     data->RigidBodies[i].qx,
+                    //     data->RigidBodies[i].qy,
+                    //     data->RigidBodies[i].qz,
+                    //     data->RigidBodies[i].qw);
+                    // std::this_thread::sleep_for(5ms);
                 }
             }
         }
 
-        const Eigen::MatrixXd& rigidBodies() { return _rigidBodies; }
+        bool updateDataDescriptions()
+        {
+            // release memory allocated by previous in previous GetDataDescriptionList()
+            if (_descriptionFrame)
+                NatNet_FreeDescriptions(_descriptionFrame);
+
+            // Retrieve Data Descriptions from Motive
+            int iResult = _client->GetDataDescriptionList(&_descriptionFrame);
+            if (iResult != ErrorCode_OK || _descriptionFrame == NULL)
+                return false;
+
+            updateDataToDescriptionMaps(_descriptionFrame);
+
+            return true;
+        }
 
     protected:
         std::unique_ptr<NatNetClient> _client;
@@ -249,30 +237,31 @@ namespace optitrack_lib {
         char _discoveredMulticastGroupAddr[kNatNetIpv4AddrStrLenMax] = NATNET_DEFAULT_MULTICAST_ADDRESS;
         int _analogSamplesPerMocapFrame = 0;
         sServerDescription _serverDescription;
+        
+        std::map<std::string, Eigen::Matrix<double,7,1>> _rigidBodies;
+        // Eigen::MatrixXd _rigidBodies;
 
-        Eigen::MatrixXd _rigidBodies;
+        // // DataHandler receives data from the server
+        // // This function is called by NatNet when a frame of mocap data is available
+        // void update(sFrameOfMocapData* data)
+        // {
+        //     _rigidBodies.setZero(data->nRigidBodies, 7);
 
-        // DataHandler receives data from the server
-        // This function is called by NatNet when a frame of mocap data is available
-        void update(sFrameOfMocapData* data)
-        {
-            _rigidBodies.setZero(data->nRigidBodies, 7);
-
-            for (int i = 0; i < data->nRigidBodies; i++) {
-                // 0x01 : bool, rigid body was successfully tracked in this frame
-                bool bTrackingValid = data->RigidBodies[i].params & 0x01;
-                _rigidBodies(i, 0) = data->RigidBodies[i].x;
-                _rigidBodies(i, 1) = data->RigidBodies[i].y;
-                _rigidBodies(i, 2) = data->RigidBodies[i].z;
-                _rigidBodies(i, 3) = data->RigidBodies[i].qx;
-                _rigidBodies(i, 4) = data->RigidBodies[i].qy;
-                _rigidBodies(i, 5) = data->RigidBodies[i].qz;
-                _rigidBodies(i, 6) = data->RigidBodies[i].qw;
-            }
-        }
+        //     for (int i = 0; i < data->nRigidBodies; i++) {
+        //         // 0x01 : bool, rigid body was successfully tracked in this frame
+        //         bool bTrackingValid = data->RigidBodies[i].params & 0x01;
+        //         _rigidBodies(i, 0) = data->RigidBodies[i].x;
+        //         _rigidBodies(i, 1) = data->RigidBodies[i].y;
+        //         _rigidBodies(i, 2) = data->RigidBodies[i].z;
+        //         _rigidBodies(i, 3) = data->RigidBodies[i].qx;
+        //         _rigidBodies(i, 4) = data->RigidBodies[i].qy;
+        //         _rigidBodies(i, 5) = data->RigidBodies[i].qz;
+        //         _rigidBodies(i, 6) = data->RigidBodies[i].qw;
+        //     }
+        // }
 
         // Establish a NatNet Client connection
-        int ConnectClient()
+        int connectClient()
         {
             // Release previous server
             _client->Disconnect();
@@ -328,9 +317,44 @@ namespace optitrack_lib {
             return ErrorCode_OK;
         }
 
+        void storeFrames(sFrameOfMocapData* data)
+        {
+            if (!_client)
+                return;
+   
+            std::shared_ptr<sFrameOfMocapData> pDataCopy = std::make_shared<sFrameOfMocapData>();
+            NatNet_CopyFrame(data, pDataCopy.get());
+
+            MocapFrameWrapper f;
+            f.data = pDataCopy;
+            f.clientLatencyMillisec = _client->SecondsSinceHostTimestamp(data->CameraMidExposureTimestamp) * 1000.0;
+            f.transitLatencyMillisec = _client->SecondsSinceHostTimestamp(data->TransmitTimestamp) * 1000.0;
+
+            if (_networkQueueMutex.try_lock_for(std::chrono::milliseconds(5)))
+            {
+                _networkQueue.push_back(f);
+
+                // Maintain a cap on the queue size, removing oldest as necessary
+                while ((int)_networkQueue.size() > kMaxQueueSize)
+                {
+                    f = _networkQueue.front();
+                    NatNet_FreeFrame(f.data.get());
+                    _networkQueue.pop_front();
+                }
+                _networkQueueMutex.unlock();
+            }
+            else
+            {
+                // Unable to lock the frame queue and we chose not to wait - drop the frame and notify
+                NatNet_FreeFrame(pDataCopy.get());
+                printf("\nFrame dropped (Frame : %d)\n", f.data->iFrame);
+            }
+        }
+
         static void NATNET_CALLCONV dataHandler(sFrameOfMocapData* data, void* pUserData)
         {
-            static_cast<Optitrack*>(pUserData)->update(data);
+            // static_cast<Optitrack*>(pUserData)->update(data);
+            static_cast<Optitrack*>(pUserData)->storeFrames(data);
         }
 
         // MessageHandler receives NatNet error/debug messages
@@ -410,6 +434,107 @@ namespace optitrack_lib {
 
             return buf;
         }
+
+        void updateDataToDescriptionMaps(sDataDescriptions* descriptionFrame)
+        {
+            _assetIDtoAssetDescriptionOrder.clear();
+            _assetIDtoAssetName.clear();
+            int assetID = 0, index = 0, cameraIndex = 0;
+            std::string assetName = "";
+
+            if (descriptionFrame == nullptr || descriptionFrame->nDataDescriptions <= 0)
+                return;
+
+            for (int i = 0; i < descriptionFrame->nDataDescriptions; i++)
+            {
+                assetID = -1;
+                assetName = "";
+
+                if (descriptionFrame->arrDataDescriptions[i].type == Descriptor_RigidBody)
+                {
+                    sRigidBodyDescription* pRB = descriptionFrame->arrDataDescriptions[i].Data.RigidBodyDescription;
+                    assetID = pRB->ID;
+                    assetName = std::string(pRB->szName);
+                }
+                else if (descriptionFrame->arrDataDescriptions[i].type == Descriptor_Skeleton)
+                {
+                    sSkeletonDescription* pSK = descriptionFrame->arrDataDescriptions[i].Data.SkeletonDescription;
+                    assetID = pSK->skeletonID;
+                    assetName = std::string(pSK->szName);
+                }
+                else if (descriptionFrame->arrDataDescriptions[i].type == Descriptor_MarkerSet)
+                {
+                    // Skip markersets for now as they dont have unique id's, but do increase the index
+                    // as they are in the data packet
+                    index++;
+                    continue;
+                }
+                else if (descriptionFrame->arrDataDescriptions[i].type == Descriptor_ForcePlate)
+                {
+                    sForcePlateDescription* pDesc = descriptionFrame->arrDataDescriptions[i].Data.ForcePlateDescription;
+                    assetID = pDesc->ID;
+                    assetName = pDesc->strSerialNo;
+                }
+                else if (descriptionFrame->arrDataDescriptions[i].type == Descriptor_Device)
+                {
+                    sDeviceDescription* pDesc = descriptionFrame->arrDataDescriptions[i].Data.DeviceDescription;
+                    assetID = pDesc->ID;
+                    assetName = std::string(pDesc->strName);
+                }
+                else if (descriptionFrame->arrDataDescriptions[i].type == Descriptor_Camera)
+                {
+                    // skip cameras as they are not in the data packet
+                    continue;
+                }
+                else if (descriptionFrame->arrDataDescriptions[i].type == Descriptor_Asset)
+                {
+                    sAssetDescription* pDesc = descriptionFrame->arrDataDescriptions[i].Data.AssetDescription;
+                    assetID = pDesc->AssetID;
+                    assetName = std::string(pDesc->szName);
+                }
+
+                // Add to Asset ID to Asset Name map
+                if (assetID == -1)
+                    printf("\n[SampleClient] Warning : Unknown data type in description list : %d\n", descriptionFrame->arrDataDescriptions[i].type);
+                else 
+                {
+                    std::pair<std::map<int, std::string>::iterator, bool> insertResult;
+                    insertResult = _assetIDtoAssetName.insert(std::pair<int,std::string>(assetID, assetName));
+                    if (insertResult.second == false)
+                        printf("\n[SampleClient] Warning : Duplicate asset ID already in Name map (Existing:%d,%s\tNew:%d,%s\n)",
+                            insertResult.first->first, insertResult.first->second.c_str(), assetID, assetName.c_str());
+                }
+
+                // Add to Asset ID to Asset Description Order map
+                if (assetID != -1)
+                {
+                    std::pair<std::map<int, int>::iterator, bool> insertResult;
+                    insertResult = _assetIDtoAssetDescriptionOrder.insert(std::pair<int, int>(assetID, index++));
+                    if (insertResult.second == false)
+                        printf("\n[SampleClient] Warning : Duplicate asset ID already in Order map (ID:%d\tOrder:%d\n)", insertResult.first->first, insertResult.first->second);
+                }
+            }
+        }
+
+        sDataDescriptions* _descriptionFrame;
+        std::map<int, int> _assetIDtoAssetDescriptionOrder;
+        std::map<int, std::string> _assetIDtoAssetName;
+        bool _updatedDataDescriptions = false, _needUpdatedDataDescriptions = true;
+
+        
+        std::timed_mutex _networkQueueMutex;
+        std::deque<MocapFrameWrapper> _networkQueue;
+        const int kMaxQueueSize = 1;
+
+        // std::timed_mutex _networkQueueMutex;
+        // std::deque<MocapFrameWrapper> _networkQueue;
+        // const int kMaxQueueSize = 500;
+
+        // sDataDescriptions* g_descriptionFrame = NULL;
+        // map<int, int> _assetIDtoAssetDescriptionOrder;
+        // map<int, string> _assetIDtoAssetName;
+        // bool gUpdatedDataDescriptions = false;
+        // bool gNeedUpdatedDataDescriptions = true;
     };
 
 } // namespace optitrack_lib

@@ -11,7 +11,6 @@ int main(int, char**)
     receiver.configure("localhost", "5511");
 
     while (true) {
-        std::cout << "Receiving:" << std::endl;
-        std::cout << receiver.receive<Eigen::MatrixXd>(2, 7) << std::endl;
+        std::cout << receiver.receive<Eigen::VectorXd>(7).transpose() << std::endl;
     }
 }
